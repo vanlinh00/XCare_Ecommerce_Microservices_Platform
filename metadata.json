@@ -1,0 +1,6 @@
+{
+  "name": "XCare Omnichannel Platform",
+  "description": "Enterprise-grade Microservices Platform for Pharmacy Retail & Omnichannel Ecommerce (Java 21, Spring Boot 3.4.2, Kafka 3.7, Redisson, Liquibase)",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

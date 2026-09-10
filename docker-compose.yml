@@ -1,0 +1,157 @@
+# ==============================================================================
+# XCare Omnichannel Platform - Infrastructure Compose Specification
+#
+# Components:
+# 1. PostgreSQL 16: Multi-database per service (auth_db, orders_db, shipping_db,
+#    fulfillment_db, tracking_db, keycloak_db)
+# 2. Apache Kafka 3.7.0: Native KRaft Mode (Controller + Broker without Zookeeper)
+# 3. Redis 7.2: High-performance caching & Redisson distributed locking
+# 4. Keycloak 24.0.2: IAM & OAuth2/OIDC provider connected to PostgreSQL
+# 5. Kafka UI: Web console for monitoring topics, consumer groups, and outbox events
+# ==============================================================================
+
+version: '3.8'
+
+networks:
+  xcare-network:
+    name: xcare-network
+    driver: bridge
+
+volumes:
+  postgres_data:
+    driver: local
+  kafka_data:
+    driver: local
+  redis_data:
+    driver: local
+
+services:
+  # ----------------------------------------------------------------------------
+  # PostgreSQL 16 - Database Per Service Storage Engine
+  # ----------------------------------------------------------------------------
+  postgres:
+    image: postgres:16-alpine
+    container_name: xcare-postgres
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres123}
+      POSTGRES_DB: postgres
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init-scripts/01-init-databases.sql:/docker-entrypoint-initdb.d/01-init-databases.sql:ro
+    networks:
+      - xcare-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # ----------------------------------------------------------------------------
+  # Apache Kafka 3.7.0 - KRaft Mode (No Zookeeper required)
+  # ----------------------------------------------------------------------------
+  kafka:
+    image: apache/kafka:3.7.0
+    container_name: xcare-kafka
+    restart: unless-stopped
+    ports:
+      - "9092:9092"   # Internal Docker network listener
+      - "29092:29092" # External Host machine listener
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: 'broker,controller'
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: 'CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT'
+      KAFKA_CONTROLLER_QUORUM_VOTERS: '1@kafka:9093'
+      KAFKA_LISTENERS: 'PLAINTEXT://:9092,CONTROLLER://:9093,PLAINTEXT_HOST://:29092'
+      KAFKA_ADVERTISED_LISTENERS: 'PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092'
+      KAFKA_CONTROLLER_LISTENER_NAMES: 'CONTROLLER'
+      KAFKA_INTER_BROKER_LISTENER_NAME: 'PLAINTEXT'
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_LOG_DIRS: '/var/lib/kafka/data'
+      CLUSTER_ID: '4L622nShTUiT8YTrQCXg-Q'
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+    networks:
+      - xcare-network
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+
+  # ----------------------------------------------------------------------------
+  # Kafka UI - Observability Dashboard for Kafka Topics & Events
+  # ----------------------------------------------------------------------------
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: xcare-kafka-ui
+    restart: unless-stopped
+    ports:
+      - "8090:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: xcare-local-cluster
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+      DYNAMIC_CONFIG_ENABLED: 'true'
+    depends_on:
+      kafka:
+        condition: service_healthy
+    networks:
+      - xcare-network
+
+  # ----------------------------------------------------------------------------
+  # Redis 7.2 - Caching & Redisson Distributed Locks
+  # ----------------------------------------------------------------------------
+  redis:
+    image: redis:7.2-alpine
+    container_name: xcare-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--requirepass", "xcare_redis_secret"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - xcare-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "xcare_redis_secret", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # ----------------------------------------------------------------------------
+  # Keycloak 24.0.2 - IAM & OpenID Connect (OIDC) / OAuth2 Server
+  # ----------------------------------------------------------------------------
+  keycloak:
+    image: quay.io/keycloak/keycloak:24.0.2
+    container_name: xcare-keycloak
+    restart: unless-stopped
+    command: start-dev --http-port 8080 --features=token-exchange,admin-fine-grained-authz
+    ports:
+      - "8088:8080" # Mapped to 8088 on host to prevent port collisions with services
+    environment:
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: admin_password_123
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://postgres:5432/keycloak_db
+      KC_DB_USERNAME: ${POSTGRES_USER:-postgres}
+      KC_DB_PASSWORD: ${POSTGRES_PASSWORD:-postgres123}
+      KC_HOSTNAME_STRICT: "false"
+      KC_HTTP_ENABLED: "true"
+      KC_HEALTH_ENABLED: "true"
+      KC_METRICS_ENABLED: "true"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - xcare-network
+    healthcheck:
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/8080; echo -e 'GET /health/ready HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3; grep 'HTTP/1.1 200 OK' <&3"]
+      interval: 10s
+      timeout: 5s
+      retries: 8

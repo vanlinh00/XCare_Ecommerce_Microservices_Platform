@@ -1,0 +1,44 @@
+server:
+  port: 8000
+
+spring:
+  application:
+    name: api-gateway
+  cloud:
+    gateway:
+      routes:
+        # Auth Service Route (:8080)
+        - id: auth-service-route
+          uri: http://localhost:8080
+          predicates:
+            - Path=/api/v1/auth/**
+
+        # Order Service Route (:8081)
+        - id: order-service-route
+          uri: http://localhost:8081
+          predicates:
+            - Path=/api/v1/orders/**
+
+        # Shipping & 3PL Integration Service (:8082)
+        - id: shipping-service-route
+          uri: http://localhost:8082
+          predicates:
+            - Path=/api/v1/shipping/**
+
+        # Hub Fulfillment Service (:8083)
+        - id: fulfillment-service-route
+          uri: http://localhost:8083
+          predicates:
+            - Path=/api/v1/fulfillment/**
+
+        # Tracking & Webhook Service (:8084)
+        - id: tracking-service-route
+          uri: http://localhost:8084
+          predicates:
+            - Path=/api/v1/tracking/**
+
+        # Notification Service (:8085)
+        - id: notification-service-route
+          uri: http://localhost:8085
+          predicates:
+            - Path=/api/v1/notifications/**

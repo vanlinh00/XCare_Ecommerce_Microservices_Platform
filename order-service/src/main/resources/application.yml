@@ -1,0 +1,106 @@
+server:
+  port: 8081
+  servlet:
+    context-path: /
+
+spring:
+  application:
+    name: order-service
+
+  # ----------------------------------------------------------------------------
+  # PostgreSQL 16 Data Source Configuration (orders_db)
+  # ----------------------------------------------------------------------------
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/orders_db}
+    username: ${SPRING_DATASOURCE_USERNAME:postgres}
+    password: ${SPRING_DATASOURCE_PASSWORD:postgres123}
+    driver-class-name: org.postgresql.Driver
+    hikari:
+      pool-name: XCare-Order-HikariPool
+      maximum-pool-size: 20
+      minimum-idle: 5
+      idle-timeout: 30000
+      connection-timeout: 20000
+      max-lifetime: 1800000
+
+  # ----------------------------------------------------------------------------
+  # JPA & Hibernate Configuration
+  # STRICT RULE: DDL-AUTO MUST BE 'none' (Liquibase controls all schema mutations)
+  # ----------------------------------------------------------------------------
+  jpa:
+    hibernate:
+      ddl-auto: none
+    open-in-view: false
+    show-sql: false
+    properties:
+      hibernate:
+        format_sql: true
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+        jdbc:
+          batch_size: 25
+          order_inserts: true
+          order_updates: true
+
+  # ----------------------------------------------------------------------------
+  # Liquibase 4.29.2 Configuration
+  # ----------------------------------------------------------------------------
+  liquibase:
+    enabled: true
+    change-log: classpath:db/changelog/db.changelog-master.xml
+    drop-first: false
+
+  # ----------------------------------------------------------------------------
+  # Apache Kafka 3.7.0 Configuration
+  # ----------------------------------------------------------------------------
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:29092}
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+      acks: all
+      retries: 5
+      properties:
+        enable.idempotence: true
+        max.in.flight.requests.per.connection: 5
+        compression.type: snappy
+        linger.ms: 10
+        batch.size: 16384
+        spring.json.add.type.headers: false
+
+  # ----------------------------------------------------------------------------
+  # Redis 7.2 Standalone Config (Used by Redisson Spring Boot Starter)
+  # ----------------------------------------------------------------------------
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:xcare_redis_secret}
+      timeout: 5000ms
+
+# ------------------------------------------------------------------------------
+# Redisson Specific Configuration (Distributed Locking, Lease & Wait times)
+# ------------------------------------------------------------------------------
+xcare:
+  lock:
+    wait-time-seconds: 5
+    lease-time-seconds: 10
+  outbox:
+    publisher:
+      fixed-delay-ms: 2000
+      batch-size: 50
+      max-retry: 5
+    topics:
+      order-created: xcare.orders.created.v1
+      order-cancelled: xcare.orders.cancelled.v1
+
+# ------------------------------------------------------------------------------
+# Observability & Health Actuator
+# ------------------------------------------------------------------------------
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      show-details: always
