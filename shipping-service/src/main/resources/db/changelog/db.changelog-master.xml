@@ -6,5 +6,6 @@
         http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-4.29.xsd">
 
     <include file="db/changelog/changes/001-create-shipments.xml"/>
+    <include file="db/changelog/changes/002-create-shipping-outbox.xml"/>
 
 </databaseChangeLog>

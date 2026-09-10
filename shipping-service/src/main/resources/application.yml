@@ -65,6 +65,23 @@ xcare:
       api-url: https://services.giaohangtietkiem.vn/services/shipment/order
       api-token: mock_ghtk_token_express
 
+# ------------------------------------------------------------------------------
+# Resilience4j Retry Configuration for 3PL API Calls
+# ------------------------------------------------------------------------------
+resilience4j:
+  retry:
+    instances:
+      thirdPartyLogisticsRetry:
+        max-attempts: 3
+        wait-duration: 500ms
+        enable-exponential-backoff: true
+        exponential-backoff-multiplier: 2
+        retry-exceptions:
+          - java.util.concurrent.TimeoutException
+          - java.io.IOException
+          - org.springframework.web.client.RestClientException
+          - java.lang.RuntimeException
+
 management:
   endpoints:
     web:

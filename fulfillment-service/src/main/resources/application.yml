@@ -57,6 +57,7 @@ xcare:
     shipping-cancellation: shipping-cancellation-events
     shipping-events: shipping-events
     inventory-events: inventory-events
+    inventory-commands: inventory-commands
   outbox:
     publisher:
       fixed-delay-ms: 2000

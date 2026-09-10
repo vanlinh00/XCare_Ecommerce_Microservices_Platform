@@ -99,7 +99,9 @@ xcare:
       order-created: xcare.orders.created.v1
       order-cancellation: order-cancellation-events
       shipping-cancellation: shipping-cancellation-events
+      shipping-events: shipping-events
       inventory-events: inventory-events
+      inventory-commands: inventory-commands
 
 # ------------------------------------------------------------------------------
 # Observability & Health Actuator

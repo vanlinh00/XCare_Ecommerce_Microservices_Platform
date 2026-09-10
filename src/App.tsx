@@ -7,7 +7,7 @@ import {
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<'overview' | 'saga' | 'services' | 'outbox' | 'compose'>('saga');
-  const [selectedScenario, setSelectedScenario] = useState<'customer' | 'fulfillment'>('fulfillment');
+  const [selectedScenario, setSelectedScenario] = useState<'customer' | 'fulfillment' | 'shipping_timeout'>('shipping_timeout');
   const [sagaStep, setSagaStep] = useState<number>(0);
   const [isSimulating, setIsSimulating] = useState<boolean>(false);
 
@@ -109,7 +109,50 @@ export default function App() {
     },
   ];
 
-  const sagaSteps = selectedScenario === 'customer' ? customerSteps : fulfillmentSteps;
+  const shippingTimeoutSteps = [
+    {
+      step: 1,
+      title: 'Bước 3 (Shipping): 3PL Timeout & Resilience4j Fallback',
+      service: 'Shipping Service (:8082)',
+      action: 'Gọi API Ahamove/GHTK bị Timeout/500 -> Resilience4j Retry 3 lần thất bại -> Kích hoạt Fallback -> Ghi nhận Transactional Outbox (shipping_outbox) và bắn Kafka Event SHIPPING_BOOKING_FAILED.',
+      topic: 'shipping-events',
+      tech: 'Resilience4j Retry (Exponential Backoff) + Transactional Outbox Pattern',
+      keyData: 'Retry: 3/3 Exhausted | Event: SHIPPING_BOOKING_FAILED (3PL Timeout)',
+    },
+    {
+      step: 2,
+      title: 'Bước 4 (Orchestrator): Ra lệnh REVERT_INVENTORY_COMMAND',
+      service: 'Order Service (:8081 - Saga Orchestrator)',
+      action: 'Nhận SHIPPING_BOOKING_FAILED -> Đổi trạng thái Order sang REVERTING_INVENTORY -> Ghi Outbox Command và bắn Kafka Command REVERT_INVENTORY_COMMAND sang cho Inventory Service.',
+      topic: 'inventory-commands',
+      tech: 'Saga Central Orchestrator + Transactional Outbox + Kafka Command Message',
+      keyData: 'Order Status: REVERTING_INVENTORY | Command: REVERT_INVENTORY_COMMAND',
+    },
+    {
+      step: 3,
+      title: 'Bước 5 (Inventory): Nhả kho Atomic SQL trên PostgreSQL',
+      service: 'Inventory Service (:8083 - KHÔNG DÙNG REDIS)',
+      action: 'Nhận REVERT_INVENTORY_COMMAND -> Thực thi Atomic SQL UPDATE (available = available + qty) trực tiếp trên PostgreSQL -> Không dùng Redis, chống Race Condition bằng row-level lock ngầm định -> Ghi Outbox & bắn INVENTORY_RELEASED.',
+      topic: 'inventory-events',
+      tech: 'PostgreSQL Native Atomic UPDATE + Transactional Outbox (NO REDIS)',
+      keyData: 'Stock Reverted: available += qty, reserved -= qty | Event: INVENTORY_RELEASED',
+    },
+    {
+      step: 4,
+      title: 'Bước 6 (Orchestrator): Chốt ORDER_FAILED_SHIPPING_ERROR',
+      service: 'Order Service (:8081 - Saga Orchestrator)',
+      action: 'Nhận INVENTORY_RELEASED -> Kiểm tra đơn đang ở REVERTING_INVENTORY -> Cập nhật trạng thái đơn thành ORDER_FAILED_SHIPPING_ERROR kèm lý do 3PL thất bại -> Hoàn tất đóng Saga Rollback an toàn!',
+      topic: 'inventory-events -> Final Order State',
+      tech: 'Saga State Machine Transition + Audit Trail Trail Complete',
+      keyData: 'Final Status: ORDER_FAILED_SHIPPING_ERROR (Saga Rollback Closed)',
+    },
+  ];
+
+  const sagaSteps = selectedScenario === 'customer' 
+    ? customerSteps 
+    : selectedScenario === 'fulfillment' 
+      ? fulfillmentSteps 
+      : shippingTimeoutSteps;
 
   const handleRunSimulation = () => {
     setIsSimulating(true);
@@ -200,14 +243,27 @@ export default function App() {
                   }`}
                 >
                   <AlertCircle className="w-3.5 h-3.5" />
-                  Task 2: Sự cố kho Hủy đóng gói (Hỏng/Hết thuốc)
+                  Task 2: Sự cố kho Hủy đóng gói
+                </button>
+                <button
+                  onClick={() => { setSelectedScenario('shipping_timeout'); setSagaStep(0); }}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all flex items-center gap-2 ${
+                    selectedScenario === 'shipping_timeout'
+                      ? 'bg-sky-400 text-slate-950 shadow-md shadow-sky-400/20'
+                      : 'bg-slate-950 text-slate-400 hover:text-slate-200 border border-slate-800'
+                  }`}
+                >
+                  <Truck className="w-3.5 h-3.5" />
+                  Task 3: 3PL Timeout &amp; Orchestration Rollback (Không Redis)
                 </button>
               </div>
 
               <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
                 <div>
                   <span className="text-xs uppercase tracking-wider text-teal-400 font-bold bg-teal-950/60 px-2.5 py-1 rounded border border-teal-800/60">
-                    Compensating Transactions Pattern ({selectedScenario === 'customer' ? 'Task 1' : 'Task 2'})
+                    {selectedScenario === 'shipping_timeout' 
+                      ? 'Orchestration Saga (Order Service as Central Orchestrator)' 
+                      : `Compensating Transactions Pattern (${selectedScenario === 'customer' ? 'Task 1' : 'Task 2'})`}
                   </span>
                   <h2 className="text-xl font-bold text-white mt-2 flex items-center gap-2">
                     {selectedScenario === 'customer' ? (
@@ -215,18 +271,25 @@ export default function App() {
                         <RotateCcw className="w-5 h-5 text-teal-400" />
                         Kịch bản 1: Khách hàng ấn Hủy đơn thuốc &amp; Kích hoạt Saga Rollback
                       </>
-                    ) : (
+                    ) : selectedScenario === 'fulfillment' ? (
                       <>
                         <AlertCircle className="w-5 h-5 text-amber-400" />
                         Kịch bản 2: Dược sĩ Hủy đóng gói tại kho (Fulfillment Failed) &amp; Rollback
+                      </>
+                    ) : (
+                      <>
+                        <Truck className="w-5 h-5 text-sky-400" />
+                        Kịch bản 3: Shipping 3PL Timeout/Failure &amp; Tự động Saga Orchestration Rollback (Atomic SQL, KHÔNG REDIS)
                       </>
                     )}
                   </h2>
                   <p className="text-sm text-slate-400 mt-1 max-w-4xl">
                     {selectedScenario === 'customer' ? (
                       <>Khi đơn thuốc đang ở trạng thái <strong className="text-amber-400">Shipper đang di chuyển tới nhà thuốc</strong>, khách hàng yêu cầu hủy. Hệ thống kích hoạt hoàn tác: Hủy Ahamove 3PL &rarr; Hoàn trả tồn kho (Redisson MultiLock) &rarr; Cập nhật <strong>CANCELLED_BY_CUSTOMER</strong>.</>
-                    ) : (
+                    ) : selectedScenario === 'fulfillment' ? (
                       <>Khi Shipper đã được book nhưng Dược sĩ đóng gói phát hiện <strong className="text-rose-400">thuốc bị vỡ/hỏng hoặc hết hàng tại kệ</strong> &rarr; Hủy Ahamove 3PL &rarr; Giải phóng Reserved, cách ly thuốc hỏng &rarr; Cập nhật đơn <strong>CANCELLED_OUT_OF_STOCK</strong>.</>
+                    ) : (
+                      <>Khi gọi API Ahamove/GHTK bị <strong className="text-rose-400">Timeout / HTTP 500</strong> &rarr; Resilience4j Retry 3 lần thất bại &rarr; Fallback lưu Outbox &amp; phát <strong>SHIPPING_BOOKING_FAILED</strong> &rarr; Order Orchestrator ra lệnh <strong>REVERT_INVENTORY_COMMAND</strong> &rarr; Inventory nhả kho bằng <strong className="text-sky-300">Atomic SQL trên PostgreSQL (KHÔNG DÙNG REDIS)</strong> &rarr; Chốt <strong>ORDER_FAILED_SHIPPING_ERROR</strong>.</>
                     )}
                   </p>
                 </div>
@@ -244,7 +307,7 @@ export default function App() {
                   ) : (
                     <>
                       <Play className="w-4 h-4" />
-                      Mô phỏng {selectedScenario === 'customer' ? 'Task 1' : 'Task 2'} (4 Bước)
+                      Mô phỏng {selectedScenario === 'customer' ? 'Task 1' : selectedScenario === 'fulfillment' ? 'Task 2' : 'Task 3'} (4 Bước)
                     </>
                   )}
                 </button>

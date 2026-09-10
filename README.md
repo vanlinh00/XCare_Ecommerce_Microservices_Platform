@@ -265,3 +265,33 @@ curl -X POST http://localhost:8083/api/v1/fulfillment/cancel-pack \
 3. `Inventory Service`: Nhận `SHIPMENT_CANCELLED` -> Lấy Redisson MultiLock cho `AUG-1G-TAB` -> Giảm `reservedQuantity`, cách ly hàng hỏng -> Bắn `INVENTORY_RELEASED`.
 4. `Order Service`: Nhận `INVENTORY_RELEASED` -> Nhận biết sự cố kho -> Chuyển trạng thái đơn thành `CANCELLED_OUT_OF_STOCK` kèm ghi chú Audit kiểm toán!
 
+---
+
+## 📌 Task 3: Orchestration Saga Rollback khi Shipping 3PL Timeout/Failure
+
+### Tóm tắt Siêu Ngắn Gọn (Executive Architecture Summary)
+
+Khi gọi đối tác 3PL (Ahamove/GHTK) gặp lỗi timeout/mạng, hệ thống tự động hoàn tác phân tán theo mô hình **Saga Orchestration** do `Order Service (:8081)` làm Trọng tài:
+
+1. **Shipping Service (:8082)**:
+   - Gọi API 3PL qua `@Retry(name = "thirdPartyLogisticsRetry")` (3 lần, Exponential Backoff).
+   - Sau 3 lần vẫn lỗi $\rightarrow$ Fallback ghi nhận `shipping_outbox` và bắn Kafka Event `SHIPPING_BOOKING_FAILED`.
+2. **Order Service (:8081 - Saga Orchestrator)**:
+   - Lắng nghe `SHIPPING_BOOKING_FAILED` $\rightarrow$ Đổi trạng thái đơn thành `REVERTING_INVENTORY`.
+   - Ghi Transactional Outbox và bắn Kafka Command `REVERT_INVENTORY_COMMAND`.
+3. **Inventory Service (:8083 - KHÔNG DÙNG REDIS)**:
+   - Lắng nghe `REVERT_INVENTORY_COMMAND` $\rightarrow$ Thực thi **Atomic SQL Query** trực tiếp trên PostgreSQL:
+     ```sql
+     UPDATE hub_stocks 
+     SET available_quantity = available_quantity + :qty, 
+         reserved_quantity = GREATEST(0, reserved_quantity - :qty), 
+         updated_at = NOW() 
+     WHERE hub_id = :hubId AND sku = :sku;
+     ```
+   - Chống Race Condition bằng row-level lock ngầm định của PostgreSQL.
+   - Ghi `fulfillment_outbox` và bắn Kafka Event `INVENTORY_RELEASED`.
+4. **Order Service (:8081 - Đóng Saga)**:
+   - Lắng nghe `INVENTORY_RELEASED` $\rightarrow$ Chuyển trạng thái đơn sang `ORDER_FAILED_SHIPPING_ERROR`.
+   - Ghi Audit Log, hoàn tất chuỗi Saga Rollback an toàn tuyệt đối.
+
+
