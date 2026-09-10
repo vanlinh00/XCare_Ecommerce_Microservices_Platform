@@ -246,12 +246,50 @@ curl -X POST http://localhost:8083/api/v1/fulfillment/cancel-pack \
 
 Khi gọi đối tác 3PL (Ahamove/GHTK) gặp lỗi timeout/mạng, hệ thống tự động hoàn tác phân tán theo mô hình **Saga Orchestration** do `Order Service (:8081)` làm Trọng tài:
 
+```
+                  ┌────────────────────────────────────────────────────────┐
+                  │          ORDER SERVICE (:8081) - ORCHESTRATOR           │
+                  └───────────────────────────▲────────────────────────────┘
+                                              │  1. SHIPPING_BOOKING_FAILED
+                                              │  [Topic: 'shipping-events']
+                  ┌───────────────────────────┴────────────────────────────┐
+                  │                 SHIPPING SERVICE (:8082)               │
+                  │ - Gọi API 3PL (Ahamove/GHTK) thất bại (Timeout/Error)  │
+                  │ - @Retry thất bại 3 lần -> Kích hoạt Fallback          │
+                  │ - Ghi shipping_outbox và phát Event báo cáo lỗi 3PL    │
+                  └────────────────────────────────────────────────────────┘
+
+                  ┌────────────────────────────────────────────────────────┐
+                  │          ORDER SERVICE (:8081) - ORCHESTRATOR           │
+                  │ - Chuyển trạng thái Order -> REVERTING_INVENTORY       │
+                  │ - Ghi outbox_events phát Command sang Inventory Service│
+                  └───────────────┬────────────────────────▲───────────────┘
+  2. RevertInventoryCommand       │                        │  3. InventoryReleasedEvent
+  [Topic: 'inventory-commands']   │                        │  [Topic: 'order-saga-responses']
+                                  ▼                        │
+                  ┌────────────────────────────────────────┴───────────────┐
+                  │           FULFILLMENT / INVENTORY SERVICE (:8083)      │
+                  │ - Nhận Command hoàn trả tồn kho từ Orchestrator        │
+                  │ - Thực thi Atomic SQL Query trực tiếp trên PostgreSQL  │
+                  │   (available += qty, reserved -= qty - Không cần Redis)│
+                  │ - Ghi fulfillment_outbox và phát Response Event        │
+                  └────────────────────────────────────────────────────────┘
+
+                  ┌────────────────────────────────────────────────────────┐
+                  │          ORDER SERVICE (:8081) - ĐÓNG SAGA             │
+                  │ - Chuyển trạng thái Order -> ORDER_FAILED_SHIPPING_ERROR│
+                  │ - Ghi Prescription Audit Log, hoàn tất Saga Rollback!  │
+                  └────────────────────────────────────────────────────────┘
+```
+
+#### Quy trình chi tiết 4 Bước:
+
 1. **Shipping Service (:8082)**:
    - Gọi API 3PL qua `@Retry(name = "thirdPartyLogisticsRetry")` (3 lần, Exponential Backoff).
-   - Sau 3 lần vẫn lỗi $\rightarrow$ Fallback ghi nhận `shipping_outbox` và bắn Kafka Event `SHIPPING_BOOKING_FAILED`.
+   - Sau 3 lần vẫn lỗi $\rightarrow$ Fallback ghi nhận `shipping_outbox` và bắn Kafka Event `SHIPPING_BOOKING_FAILED` sang topic `shipping-events`.
 2. **Order Service (:8081 - Saga Orchestrator)**:
    - Lắng nghe `SHIPPING_BOOKING_FAILED` $\rightarrow$ Đổi trạng thái đơn thành `REVERTING_INVENTORY`.
-   - Ghi Transactional Outbox và bắn Kafka Command `REVERT_INVENTORY_COMMAND`.
+   - Ghi Transactional Outbox và bắn Kafka Command `REVERT_INVENTORY_COMMAND` sang topic `inventory-commands`.
 3. **Inventory Service (:8083 - KHÔNG DÙNG REDIS)**:
    - Lắng nghe `REVERT_INVENTORY_COMMAND` $\rightarrow$ Thực thi **Atomic SQL Query** trực tiếp trên PostgreSQL:
      ```sql
@@ -262,9 +300,9 @@ Khi gọi đối tác 3PL (Ahamove/GHTK) gặp lỗi timeout/mạng, hệ thốn
      WHERE hub_id = :hubId AND sku = :sku;
      ```
    - Chống Race Condition bằng row-level lock ngầm định của PostgreSQL.
-   - Ghi `fulfillment_outbox` và bắn Kafka Event `INVENTORY_RELEASED`.
+   - Ghi `fulfillment_outbox` và bắn Kafka Event `INVENTORY_RELEASED` về topic `order-saga-responses`.
 4. **Order Service (:8081 - Đóng Saga)**:
    - Lắng nghe `INVENTORY_RELEASED` $\rightarrow$ Chuyển trạng thái đơn sang `ORDER_FAILED_SHIPPING_ERROR`.
-   - Ghi Audit Log, hoàn tất chuỗi Saga Rollback an toàn tuyệt đối.
+   - Ghi Prescription Audit Log, hoàn tất chuỗi Saga Rollback an toàn tuyệt đối.
 
 
