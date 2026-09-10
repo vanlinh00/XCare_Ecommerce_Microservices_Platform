@@ -12,6 +12,7 @@ public enum OrderStatus {
     DELIVERED,
     CANCEL_REQUESTED,           // Saga step 1: Request cancel submitted, rollback in progress
     CANCELLED_BY_CUSTOMER,      // Saga step 4: Rollback finished, stock released & 3PL cancelled
+    CANCELLED_OUT_OF_STOCK,     // Task 2: Saga Rollback when Fulfillment/Inventory packaging fails
     CANCELLED_BY_SYSTEM,
     CANCELLED,
     RETURNED

@@ -53,8 +53,15 @@ spring:
 
 xcare:
   topics:
+    fulfillment-events: fulfillment-events
     shipping-cancellation: shipping-cancellation-events
+    shipping-events: shipping-events
     inventory-events: inventory-events
+  outbox:
+    publisher:
+      fixed-delay-ms: 2000
+      batch-size: 50
+      max-retry: 5
 
 management:
   endpoints:

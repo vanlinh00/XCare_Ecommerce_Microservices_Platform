@@ -54,7 +54,9 @@ spring:
 xcare:
   topics:
     order-cancellation: order-cancellation-events
+    fulfillment-events: fulfillment-events
     shipping-cancellation: shipping-cancellation-events
+    shipping-events: shipping-events
   carriers:
     ahamove:
       api-url: https://api.ahamove.com/v1

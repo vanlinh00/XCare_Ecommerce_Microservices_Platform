@@ -128,20 +128,36 @@ public class OrderServiceImpl implements OrderService {
         Order order = orderRepository.findById(event.getOrderId())
                 .orElseThrow(() -> new OrderNotFoundException(event.getOrderId()));
 
-        // Kiểm tra Idempotence: Nếu đơn đã hủy rồi thì không xử lý lại
-        if (order.getStatus() == OrderStatus.CANCELLED_BY_CUSTOMER) {
-            log.warn("Đơn [{}] đã được cập nhật CANCELLED_BY_CUSTOMER từ trước. Bỏ qua event lặp.", order.getOrderNumber());
+        // Kiểm tra Idempotence: Nếu đơn đã kết thúc ở trạng thái hủy thì không xử lý lại
+        if (order.getStatus() == OrderStatus.CANCELLED_BY_CUSTOMER || 
+            order.getStatus() == OrderStatus.CANCELLED_OUT_OF_STOCK) {
+            log.warn("Đơn [{}] đã hoàn tất hủy từ trước ({}) . Bỏ qua event lặp.", 
+                    order.getOrderNumber(), order.getStatus());
             return;
         }
 
-        // Cập nhật trạng thái cuối cùng thành CANCELLED_BY_CUSTOMER và đóng Saga Process
-        order.setStatus(OrderStatus.CANCELLED_BY_CUSTOMER);
-        order.setNote((order.getNote() != null ? order.getNote() + " | " : "") +
-                "[Saga Completed]: Đã hủy 3PL & hoàn trả tồn kho thành công lúc " + Instant.now());
-        orderRepository.save(order);
+        // Phân biệt Task 1 (Khách hủy) vs Task 2 (Kho hết hàng/hỏng khi đóng gói - FULFILLMENT_FAILED)
+        boolean isFulfillmentFailed = (event.getSagaType() != null && event.getSagaType().contains("FULFILLMENT")) ||
+                (event.getCancellationReason() != null && event.getCancellationReason().toUpperCase().contains("FULFILLMENT")) ||
+                (event.getSagaId() != null && event.getSagaId().toUpperCase().contains("FULFILLMENT"));
 
-        log.info("BƯỚC 4 (Order Service): ĐÃ ĐÓNG SAGA THÀNH CÔNG cho đơn [{}]. Trạng thái cuối: CANCELLED_BY_CUSTOMER",
-                order.getOrderNumber());
+        if (isFulfillmentFailed) {
+            order.setStatus(OrderStatus.CANCELLED_OUT_OF_STOCK);
+            order.setNote((order.getNote() != null ? order.getNote() + " | " : "") +
+                    "[Saga Rollback Completed]: Đơn hàng bị hủy do kho hết thuốc/hỏng thuốc khi đóng gói (FULFILLMENT_FAILED). Lý do: " 
+                    + (event.getCancellationReason() != null ? event.getCancellationReason() : "Hết hàng trên kệ") 
+                    + " | Đã hủy 3PL Ahamove & giải phóng tồn kho ảo lúc " + Instant.now());
+            log.info("BƯỚC 4 (Order Service - Task 2): ĐÃ ĐÓNG SAGA THÀNH CÔNG cho đơn [{}]. Trạng thái cuối: CANCELLED_OUT_OF_STOCK",
+                    order.getOrderNumber());
+        } else {
+            order.setStatus(OrderStatus.CANCELLED_BY_CUSTOMER);
+            order.setNote((order.getNote() != null ? order.getNote() + " | " : "") +
+                    "[Saga Completed]: Đã hủy 3PL & hoàn trả tồn kho thành công lúc " + Instant.now());
+            log.info("BƯỚC 4 (Order Service - Task 1): ĐÃ ĐÓNG SAGA THÀNH CÔNG cho đơn [{}]. Trạng thái cuối: CANCELLED_BY_CUSTOMER",
+                    order.getOrderNumber());
+        }
+
+        orderRepository.save(order);
     }
 
     private OutboxEvent buildCancelOrderOutboxEvent(Order order, String sagaId, CancelOrderRequest request) {

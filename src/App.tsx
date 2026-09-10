@@ -7,6 +7,7 @@ import {
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<'overview' | 'saga' | 'services' | 'outbox' | 'compose'>('saga');
+  const [selectedScenario, setSelectedScenario] = useState<'customer' | 'fulfillment'>('fulfillment');
   const [sagaStep, setSagaStep] = useState<number>(0);
   const [isSimulating, setIsSimulating] = useState<boolean>(false);
 
@@ -30,7 +31,7 @@ export default function App() {
     { label: 'IAM & Security', val: 'Keycloak 24.0.2 (OIDC/OAuth2)' },
   ];
 
-  const sagaSteps = [
+  const customerSteps = [
     {
       step: 1,
       title: 'Bước 1: Khách hàng ấn Hủy đơn',
@@ -51,7 +52,7 @@ export default function App() {
     },
     {
       step: 3,
-      title: 'Bước 3: Hoàn trả tồn kho nhà thuốc (Compensating)',
+      title: 'Bước 3: Hoàn trả tồn kho nhà thuốc',
       service: 'Inventory Service (:8083)',
       action: 'Lắng nghe SHIPMENT_CANCELLED -> Kiểm tra Idempotency Redis -> Sắp xếp SKU theo thứ tự từ điển -> Lấy Redisson MultiLock -> Hoàn trả tồn kho (Reserved -> Available) -> Giải phóng Lock -> Bắn INVENTORY_RELEASED.',
       topic: 'inventory-events',
@@ -60,7 +61,7 @@ export default function App() {
     },
     {
       step: 4,
-      title: 'Bước 4: Đóng quy trình Saga & Cập nhật kết quả',
+      title: 'Bước 4: Đóng quy trình Saga',
       service: 'Order Service (:8081)',
       action: 'Lắng nghe INVENTORY_RELEASED -> Kiểm tra Idempotency đơn hàng -> Cập nhật trạng thái đơn thành CANCELLED_BY_CUSTOMER -> Ghi log kiểm toán & Đóng hoàn tất quy trình Saga Rollback.',
       topic: 'inventory-events -> Final Order State',
@@ -68,6 +69,47 @@ export default function App() {
       keyData: 'Final Status: CANCELLED_BY_CUSTOMER (Saga Process Closed)',
     },
   ];
+
+  const fulfillmentSteps = [
+    {
+      step: 1,
+      title: 'Bước 1: Dược sĩ HỦY ĐÓNG GÓI',
+      service: 'Fulfillment Service (:8083)',
+      action: 'Dược sĩ phát hiện thuốc vỡ/ẩm mốc hoặc hết hàng tại kệ -> Gọi POST /api/v1/fulfillment/cancel-pack -> Lưu sự kiện FULFILLMENT_FAILED vào fulfillment_outbox (ACID Transaction) -> Outbox Publisher quét (SKIP LOCKED) bắn Kafka.',
+      topic: 'fulfillment-events',
+      tech: 'Transactional Outbox + PostgreSQL SKIP LOCKED + Spring Data JPA',
+      keyData: 'Status: FULFILLMENT_FAILED | Outbox Table: fulfillment_outbox',
+    },
+    {
+      step: 2,
+      title: 'Bước 2: Hủy chuyến Ahamove 3PL',
+      service: 'Shipping Service (:8082)',
+      action: 'Lắng nghe topic fulfillment-events -> Kiểm tra Idempotency Redis -> Gọi API Ahamove cancelDeliveryOrder (lý do: "Kho hủy đóng gói do thuốc hỏng/hết hàng") -> Cập nhật Shipment = CANCELLED -> Bắn SHIPMENT_CANCELLED.',
+      topic: 'shipping-events / shipping-cancellation-events',
+      tech: 'Ahamove 3PL Adapter + Redis Idempotency Key (TTL 24h)',
+      keyData: 'Carrier: AHAMOVE | ShipmentStatus: CANCELLED (3PL Order Terminated)',
+    },
+    {
+      step: 3,
+      title: 'Bước 3: Cách ly hàng & Giải phóng tồn ảo',
+      service: 'Inventory Service (:8083)',
+      action: 'Lắng nghe SHIPMENT_CANCELLED -> Kiểm tra Idempotency Redis -> Sort SKU alphabet -> Lấy Redisson MultiLock -> Trừ reserved_quantity, KHÔNG cộng vào available_quantity (cách ly thuốc hỏng) -> Bắn INVENTORY_RELEASED.',
+      topic: 'inventory-events',
+      tech: 'Redisson MultiLock + Quarantine Damaged Goods + Saga Event Emitter',
+      keyData: 'SagaType: FULFILLMENT_FAILED_OUT_OF_STOCK | Deficit Quarantined',
+    },
+    {
+      step: 4,
+      title: 'Bước 4: Cập nhật CANCELLED_OUT_OF_STOCK',
+      service: 'Order Service (:8081)',
+      action: 'Lắng nghe INVENTORY_RELEASED -> Nhận diện sự cố kho (sagaType chứa FULFILLMENT) -> Cập nhật trạng thái đơn thành CANCELLED_OUT_OF_STOCK -> Ghi Prescription Audit Note -> Hoàn tất Saga Rollback!',
+      topic: 'inventory-events -> Final Order State',
+      tech: 'Kafka Idempotent Consumer + Order State Machine + Audit Trail',
+      keyData: 'Final Status: CANCELLED_OUT_OF_STOCK (Saga Rollback Closed)',
+    },
+  ];
+
+  const sagaSteps = selectedScenario === 'customer' ? customerSteps : fulfillmentSteps;
 
   const handleRunSimulation = () => {
     setIsSimulating(true);
@@ -132,21 +174,60 @@ export default function App() {
           ))}
         </div>
 
-        {/* Tab 0: Task 1: Saga Rollback */}
+        {/* Tab 0: Saga Rollback Scenarios */}
         {activeTab === 'saga' && (
           <div className="space-y-6">
             <div className="p-6 rounded-xl bg-slate-900 border border-slate-800 space-y-6">
+              {/* Scenario Switcher */}
+              <div className="flex flex-wrap gap-2 pb-4 border-b border-slate-800/80">
+                <button
+                  onClick={() => { setSelectedScenario('customer'); setSagaStep(0); }}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all flex items-center gap-2 ${
+                    selectedScenario === 'customer'
+                      ? 'bg-teal-500 text-slate-950 shadow-md shadow-teal-500/20'
+                      : 'bg-slate-950 text-slate-400 hover:text-slate-200 border border-slate-800'
+                  }`}
+                >
+                  <RotateCcw className="w-3.5 h-3.5" />
+                  Task 1: Khách hàng ấn Hủy đơn
+                </button>
+                <button
+                  onClick={() => { setSelectedScenario('fulfillment'); setSagaStep(0); }}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all flex items-center gap-2 ${
+                    selectedScenario === 'fulfillment'
+                      ? 'bg-amber-400 text-slate-950 shadow-md shadow-amber-400/20'
+                      : 'bg-slate-950 text-slate-400 hover:text-slate-200 border border-slate-800'
+                  }`}
+                >
+                  <AlertCircle className="w-3.5 h-3.5" />
+                  Task 2: Sự cố kho Hủy đóng gói (Hỏng/Hết thuốc)
+                </button>
+              </div>
+
               <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
                 <div>
                   <span className="text-xs uppercase tracking-wider text-teal-400 font-bold bg-teal-950/60 px-2.5 py-1 rounded border border-teal-800/60">
-                    Compensating Transactions Pattern
+                    Compensating Transactions Pattern ({selectedScenario === 'customer' ? 'Task 1' : 'Task 2'})
                   </span>
                   <h2 className="text-xl font-bold text-white mt-2 flex items-center gap-2">
-                    <RotateCcw className="w-5 h-5 text-teal-400" />
-                    Kịch bản Nghiệp vụ: Khách hàng ấn Hủy đơn thuốc &amp; Kích hoạt Saga Rollback
+                    {selectedScenario === 'customer' ? (
+                      <>
+                        <RotateCcw className="w-5 h-5 text-teal-400" />
+                        Kịch bản 1: Khách hàng ấn Hủy đơn thuốc &amp; Kích hoạt Saga Rollback
+                      </>
+                    ) : (
+                      <>
+                        <AlertCircle className="w-5 h-5 text-amber-400" />
+                        Kịch bản 2: Dược sĩ Hủy đóng gói tại kho (Fulfillment Failed) &amp; Rollback
+                      </>
+                    )}
                   </h2>
                   <p className="text-sm text-slate-400 mt-1 max-w-4xl">
-                    Khi đơn thuốc đang ở trạng thái <strong className="text-amber-400">Shipper đang di chuyển tới nhà thuốc lấy hàng</strong>, khách hàng yêu cầu hủy đơn. Hệ thống kích hoạt chuỗi giao dịch bù trừ qua Kafka Choreography đảm bảo tính nhất quán dữ liệu phân tán (Eventual Consistency).
+                    {selectedScenario === 'customer' ? (
+                      <>Khi đơn thuốc đang ở trạng thái <strong className="text-amber-400">Shipper đang di chuyển tới nhà thuốc</strong>, khách hàng yêu cầu hủy. Hệ thống kích hoạt hoàn tác: Hủy Ahamove 3PL &rarr; Hoàn trả tồn kho (Redisson MultiLock) &rarr; Cập nhật <strong>CANCELLED_BY_CUSTOMER</strong>.</>
+                    ) : (
+                      <>Khi Shipper đã được book nhưng Dược sĩ đóng gói phát hiện <strong className="text-rose-400">thuốc bị vỡ/hỏng hoặc hết hàng tại kệ</strong> &rarr; Hủy Ahamove 3PL &rarr; Giải phóng Reserved, cách ly thuốc hỏng &rarr; Cập nhật đơn <strong>CANCELLED_OUT_OF_STOCK</strong>.</>
+                    )}
                   </p>
                 </div>
 
@@ -163,7 +244,7 @@ export default function App() {
                   ) : (
                     <>
                       <Play className="w-4 h-4" />
-                      Mô phỏng Saga Rollback (4 Bước)
+                      Mô phỏng {selectedScenario === 'customer' ? 'Task 1' : 'Task 2'} (4 Bước)
                     </>
                   )}
                 </button>

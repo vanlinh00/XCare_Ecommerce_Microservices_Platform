@@ -87,8 +87,10 @@ public class InventoryReleaseService {
 
             log.info("Đã giữ Distributed Lock cho {} SKUs tại hub {}", sortedSkus.size(), event.getPharmacyHubId());
 
-            // 4. Hoàn trả số lượng tồn kho (Compensating action: Reserved -> Available)
+            // 4. Hoàn trả số lượng tồn kho (Compensating action)
             List<InventoryReleasedEvent.ReleasedItemPayload> releasedItems = new ArrayList<>();
+            boolean isFulfillmentFailed = (event.getCancelReason() != null && event.getCancelReason().contains("FULFILLMENT_FAILED"))
+                    || (event.getSagaId() != null && event.getSagaId().contains("FULFILLMENT"));
 
             for (ShipmentCancelledEvent.ShippingItemPayload item : event.getItems()) {
                 Optional<HubStock> stockOpt = hubStockRepository.findByHubIdAndSku(event.getPharmacyHubId(), item.getSku());
@@ -98,22 +100,30 @@ public class InventoryReleaseService {
                     stock = stockOpt.get();
                     int qty = item.getQuantity();
                     int newReserved = Math.max(0, stock.getReservedQuantity() - qty);
-                    int newAvailable = stock.getAvailableQuantity() + qty;
-
-                    log.info("Hoàn kho SKU [{}] tại Hub [{}]: Reserved ({} -> {}), Available ({} -> {})",
-                            item.getSku(), event.getPharmacyHubId(),
-                            stock.getReservedQuantity(), newReserved,
-                            stock.getAvailableQuantity(), newAvailable);
+                    
+                    // Nếu là FULFILLMENT_FAILED (thuốc vỡ/hỏng/hết hàng), không cộng lại vào available (cách ly thuốc hỏng)
+                    int newAvailable;
+                    if (isFulfillmentFailed) {
+                        newAvailable = stock.getAvailableQuantity();
+                        log.warn("SỰ CỐ HÀNG HÓA TẠI KHO (SKU: [{}]): Hủy giữ chỗ Reserved ({} -> {}), không cộng Available do hàng lỗi/hết hàng.",
+                                item.getSku(), stock.getReservedQuantity(), newReserved);
+                    } else {
+                        newAvailable = stock.getAvailableQuantity() + qty;
+                        log.info("Hoàn kho thông thường SKU [{}] tại Hub [{}]: Reserved ({} -> {}), Available ({} -> {})",
+                                item.getSku(), event.getPharmacyHubId(),
+                                stock.getReservedQuantity(), newReserved,
+                                stock.getAvailableQuantity(), newAvailable);
+                    }
 
                     stock.setReservedQuantity(newReserved);
                     stock.setAvailableQuantity(newAvailable);
                 } else {
-                    // Nếu chưa có bản ghi tồn kho, tạo mới với số lượng hoàn trả
+                    // Nếu chưa có bản ghi tồn kho, tạo mới
                     stock = HubStock.builder()
                             .hubId(event.getPharmacyHubId())
                             .sku(item.getSku())
                             .productName(item.getProductName())
-                            .availableQuantity(item.getQuantity())
+                            .availableQuantity(isFulfillmentFailed ? 0 : item.getQuantity())
                             .reservedQuantity(0)
                             .build();
                 }
@@ -137,6 +147,8 @@ public class InventoryReleaseService {
                     .orderNumber(event.getOrderNumber())
                     .pharmacyHubId(event.getPharmacyHubId())
                     .status("INVENTORY_RELEASED")
+                    .cancellationReason(event.getCancelReason())
+                    .sagaType(isFulfillmentFailed ? "FULFILLMENT_FAILED_OUT_OF_STOCK" : "CUSTOMER_CANCEL")
                     .releasedAt(Instant.now())
                     .items(releasedItems)
                     .build();

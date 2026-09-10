@@ -22,7 +22,7 @@ public class InventorySagaKafkaListener {
     private final ObjectMapper objectMapper;
 
     @KafkaListener(
-            topics = "${xcare.topics.shipping-cancellation:shipping-cancellation-events}",
+            topics = {"${xcare.topics.shipping-cancellation:shipping-cancellation-events}", "${xcare.topics.shipping-events:shipping-events}"},
             groupId = "xcare-inventory-cancellation-group"
     )
     public void onShipmentCancelled(ConsumerRecord<String, String> record) {

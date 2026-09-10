@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog
+        xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
+        http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-4.29.xsd">
+
+    <changeSet id="001-create-shipments" author="xcare-architect">
+        <createTable tableName="shipments">
+            <column name="id" type="UUID">
+                <constraints primaryKey="true" nullable="false"/>
+            </column>
+            <column name="order_id" type="UUID">
+                <constraints nullable="false"/>
+            </column>
+            <column name="order_number" type="VARCHAR(64)">
+                <constraints nullable="false"/>
+            </column>
+            <column name="pharmacy_hub_id" type="VARCHAR(64)">
+                <constraints nullable="false"/>
+            </column>
+            <column name="carrier" type="VARCHAR(32)">
+                <constraints nullable="false"/>
+            </column>
+            <column name="tracking_code" type="VARCHAR(64)">
+                <constraints nullable="false" unique="true"/>
+            </column>
+            <column name="status" type="VARCHAR(32)">
+                <constraints nullable="false"/>
+            </column>
+            <column name="cancellation_reason" type="VARCHAR(500)"/>
+            <column name="created_at" type="TIMESTAMP WITH TIME ZONE">
+                <constraints nullable="false"/>
+            </column>
+            <column name="updated_at" type="TIMESTAMP WITH TIME ZONE">
+                <constraints nullable="false"/>
+            </column>
+        </createTable>
+
+        <createIndex tableName="shipments" indexName="idx_shipment_order_id">
+            <column name="order_id"/>
+        </createIndex>
+        <createIndex tableName="shipments" indexName="idx_shipment_tracking_code">
+            <column name="tracking_code"/>
+        </createIndex>
+    </changeSet>
+
+</databaseChangeLog>

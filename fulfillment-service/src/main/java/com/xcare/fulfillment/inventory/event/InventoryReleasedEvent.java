@@ -25,6 +25,8 @@ public class InventoryReleasedEvent {
     private String orderNumber;
     private String pharmacyHubId;
     private String status; // "INVENTORY_RELEASED"
+    private String cancellationReason;
+    private String sagaType; // "CUSTOMER_CANCEL" or "FULFILLMENT_FAILED_OUT_OF_STOCK"
     private Instant releasedAt;
     private List<ReleasedItemPayload> items;
 
