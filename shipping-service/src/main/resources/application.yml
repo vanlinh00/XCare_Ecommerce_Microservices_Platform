@@ -57,6 +57,8 @@ xcare:
     fulfillment-events: fulfillment-events
     shipping-cancellation: shipping-cancellation-events
     shipping-events: shipping-events
+    shipping-commands: shipping-commands
+    order-saga-responses: order-saga-responses
   carriers:
     ahamove:
       api-url: https://api.ahamove.com/v1

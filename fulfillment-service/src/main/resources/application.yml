@@ -58,6 +58,7 @@ xcare:
     shipping-events: shipping-events
     inventory-events: inventory-events
     inventory-commands: inventory-commands
+    order-saga-responses: order-saga-responses
   outbox:
     publisher:
       fixed-delay-ms: 2000

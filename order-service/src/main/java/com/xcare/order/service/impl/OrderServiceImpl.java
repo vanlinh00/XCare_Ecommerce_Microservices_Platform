@@ -51,6 +51,7 @@ public class OrderServiceImpl implements OrderService {
     private final OrderRepository orderRepository;
     private final OutboxEventRepository outboxEventRepository;
     private final DistributedLockManager distributedLockManager;
+    private final OrderSagaOrchestrator orderSagaOrchestrator;
     private final ObjectMapper objectMapper;
 
     @Value("${xcare.outbox.topics.order-created:xcare.orders.created.v1}")
@@ -68,7 +69,7 @@ public class OrderServiceImpl implements OrderService {
         Order order = orderRepository.findById(orderId)
                 .orElseThrow(() -> new OrderNotFoundException(orderId));
 
-        // 1. Kiểm tra trạng thái đơn: Phải là trạng thái cho phép hủy (Shipper đang tới lấy, đang chuẩn bị thuốc, mới tạo)
+        // 1. Kiểm tra trạng thái đơn: Phải là trạng thái cho phép hủy
         if (order.getStatus() == OrderStatus.DELIVERED || order.getStatus() == OrderStatus.RETURNED) {
             throw new IllegalOrderStateException("Đơn hàng đã được giao thành công hoặc đã hoàn tất, không thể hủy!");
         }
@@ -95,26 +96,17 @@ public class OrderServiceImpl implements OrderService {
                     .build();
         }
 
-        // 2. Chuyển trạng thái sang CANCEL_REQUESTED (Saga Step 1)
-        order.setStatus(OrderStatus.CANCEL_REQUESTED);
-        order.setNote((order.getNote() != null ? order.getNote() + " | " : "") +
-                "[Yêu cầu hủy]: " + request.getReason() + " (Bởi: " + request.getCancelledBy() + ")");
-        orderRepository.save(order);
-
-        // 3. Khởi tạo Saga Rollback Event & ghi vào bảng outbox_events trong CÙNG DB Transaction
-        String sagaId = "SAGA-ROLLBACK-" + order.getOrderNumber() + "-" + UUID.randomUUID().toString().substring(0, 8);
-        OutboxEvent outboxEvent = buildCancelOrderOutboxEvent(order, sagaId, request);
-        outboxEventRepository.save(outboxEvent);
-
-        log.info("BƯỚC 1 (Order Service): Đã lưu Outbox Event [{}] cho Saga [{}] vào topic [{}]",
-                outboxEvent.getId(), sagaId, outboxEvent.getTopic());
+        // 2. Kích hoạt Saga Orchestration (Bước 1): Đổi status -> CANCEL_REQUESTED & Bắn CancelShipmentCommand qua Outbox
+        String sagaId = "SAGA-ORD-CANCEL-" + order.getOrderNumber() + "-" + UUID.randomUUID().toString().substring(0, 8);
+        String cancelledBy = request.getCancelledBy() != null ? request.getCancelledBy() : "CUSTOMER";
+        orderSagaOrchestrator.startCancelOrderSaga(order, sagaId, request.getReason(), cancelledBy);
 
         return CancelOrderResponse.builder()
                 .orderId(order.getId())
                 .orderNumber(order.getOrderNumber())
                 .sagaId(sagaId)
                 .status(OrderStatus.CANCEL_REQUESTED.name())
-                .message("Đã tiếp nhận yêu cầu hủy đơn. Hệ thống đang kích hoạt quy trình Saga Rollback.")
+                .message("Đã tiếp nhận yêu cầu hủy đơn. Hệ thống đang kích hoạt quy trình Saga Orchestration.")
                 .requestedAt(Instant.now())
                 .build();
     }
