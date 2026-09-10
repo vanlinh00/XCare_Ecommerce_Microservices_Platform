@@ -9,11 +9,16 @@ import com.xcare.order.domain.enums.OrderStatus;
 import com.xcare.order.domain.enums.OutboxStatus;
 import com.xcare.order.domain.enums.PaymentMethod;
 import com.xcare.order.domain.enums.PaymentStatus;
+import com.xcare.order.dto.request.CancelOrderRequest;
 import com.xcare.order.dto.request.CreateOrderRequest;
 import com.xcare.order.dto.request.OrderItemRequest;
+import com.xcare.order.dto.response.CancelOrderResponse;
 import com.xcare.order.dto.response.OrderItemResponse;
 import com.xcare.order.dto.response.OrderResponse;
+import com.xcare.order.event.InventoryReleasedEvent;
+import com.xcare.order.event.OrderCancelRequestedEvent;
 import com.xcare.order.event.OrderCreatedEvent;
+import com.xcare.order.exception.IllegalOrderStateException;
 import com.xcare.order.exception.OrderNotFoundException;
 import com.xcare.order.lock.DistributedLockManager;
 import com.xcare.order.repository.OrderRepository;
@@ -50,6 +55,133 @@ public class OrderServiceImpl implements OrderService {
 
     @Value("${xcare.outbox.topics.order-created:xcare.orders.created.v1}")
     private String orderCreatedTopic;
+
+    @Value("${xcare.outbox.topics.order-cancellation:order-cancellation-events}")
+    private String orderCancellationTopic;
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public CancelOrderResponse cancelOrder(UUID orderId, CancelOrderRequest request) {
+        log.info("BƯỚC 1 (Order Service): Tiếp nhận yêu cầu hủy đơn [{}] từ [{}] với lý do: {}",
+                orderId, request.getCancelledBy(), request.getReason());
+
+        Order order = orderRepository.findById(orderId)
+                .orElseThrow(() -> new OrderNotFoundException(orderId));
+
+        // 1. Kiểm tra trạng thái đơn: Phải là trạng thái cho phép hủy (Shipper đang tới lấy, đang chuẩn bị thuốc, mới tạo)
+        if (order.getStatus() == OrderStatus.DELIVERED || order.getStatus() == OrderStatus.RETURNED) {
+            throw new IllegalOrderStateException("Đơn hàng đã được giao thành công hoặc đã hoàn tất, không thể hủy!");
+        }
+
+        if (order.getStatus() == OrderStatus.CANCELLED_BY_CUSTOMER || order.getStatus() == OrderStatus.CANCELLED) {
+            log.warn("Đơn hàng [{}] đã ở trạng thái hủy từ trước", orderId);
+            return CancelOrderResponse.builder()
+                    .orderId(order.getId())
+                    .orderNumber(order.getOrderNumber())
+                    .status(order.getStatus().name())
+                    .message("Đơn hàng đã được hủy trước đó")
+                    .requestedAt(Instant.now())
+                    .build();
+        }
+
+        if (order.getStatus() == OrderStatus.CANCEL_REQUESTED) {
+            log.warn("Đơn hàng [{}] đang trong tiến trình Saga Rollback", orderId);
+            return CancelOrderResponse.builder()
+                    .orderId(order.getId())
+                    .orderNumber(order.getOrderNumber())
+                    .status(OrderStatus.CANCEL_REQUESTED.name())
+                    .message("Yêu cầu hủy đơn đang được xử lý (Saga in-progress)")
+                    .requestedAt(Instant.now())
+                    .build();
+        }
+
+        // 2. Chuyển trạng thái sang CANCEL_REQUESTED (Saga Step 1)
+        order.setStatus(OrderStatus.CANCEL_REQUESTED);
+        order.setNote((order.getNote() != null ? order.getNote() + " | " : "") +
+                "[Yêu cầu hủy]: " + request.getReason() + " (Bởi: " + request.getCancelledBy() + ")");
+        orderRepository.save(order);
+
+        // 3. Khởi tạo Saga Rollback Event & ghi vào bảng outbox_events trong CÙNG DB Transaction
+        String sagaId = "SAGA-ROLLBACK-" + order.getOrderNumber() + "-" + UUID.randomUUID().toString().substring(0, 8);
+        OutboxEvent outboxEvent = buildCancelOrderOutboxEvent(order, sagaId, request);
+        outboxEventRepository.save(outboxEvent);
+
+        log.info("BƯỚC 1 (Order Service): Đã lưu Outbox Event [{}] cho Saga [{}] vào topic [{}]",
+                outboxEvent.getId(), sagaId, outboxEvent.getTopic());
+
+        return CancelOrderResponse.builder()
+                .orderId(order.getId())
+                .orderNumber(order.getOrderNumber())
+                .sagaId(sagaId)
+                .status(OrderStatus.CANCEL_REQUESTED.name())
+                .message("Đã tiếp nhận yêu cầu hủy đơn. Hệ thống đang kích hoạt quy trình Saga Rollback.")
+                .requestedAt(Instant.now())
+                .build();
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public void completeOrderCancellation(InventoryReleasedEvent event) {
+        log.info("BƯỚC 4 (Order Service): Nhận xác nhận INVENTORY_RELEASED cho đơn [{}] từ Saga [{}]",
+                event.getOrderNumber(), event.getSagaId());
+
+        Order order = orderRepository.findById(event.getOrderId())
+                .orElseThrow(() -> new OrderNotFoundException(event.getOrderId()));
+
+        // Kiểm tra Idempotence: Nếu đơn đã hủy rồi thì không xử lý lại
+        if (order.getStatus() == OrderStatus.CANCELLED_BY_CUSTOMER) {
+            log.warn("Đơn [{}] đã được cập nhật CANCELLED_BY_CUSTOMER từ trước. Bỏ qua event lặp.", order.getOrderNumber());
+            return;
+        }
+
+        // Cập nhật trạng thái cuối cùng thành CANCELLED_BY_CUSTOMER và đóng Saga Process
+        order.setStatus(OrderStatus.CANCELLED_BY_CUSTOMER);
+        order.setNote((order.getNote() != null ? order.getNote() + " | " : "") +
+                "[Saga Completed]: Đã hủy 3PL & hoàn trả tồn kho thành công lúc " + Instant.now());
+        orderRepository.save(order);
+
+        log.info("BƯỚC 4 (Order Service): ĐÃ ĐÓNG SAGA THÀNH CÔNG cho đơn [{}]. Trạng thái cuối: CANCELLED_BY_CUSTOMER",
+                order.getOrderNumber());
+    }
+
+    private OutboxEvent buildCancelOrderOutboxEvent(Order order, String sagaId, CancelOrderRequest request) {
+        OrderCancelRequestedEvent event = OrderCancelRequestedEvent.builder()
+                .eventId(UUID.randomUUID())
+                .sagaId(sagaId)
+                .orderId(order.getId())
+                .orderNumber(order.getOrderNumber())
+                .customerId(order.getCustomerId())
+                .pharmacyHubId(order.getPharmacyHubId())
+                .cancelReason(request.getReason())
+                .requestedBy(request.getCancelledBy() != null ? request.getCancelledBy() : "CUSTOMER")
+                .requestedAt(Instant.now())
+                .items(order.getItems().stream()
+                        .map(i -> OrderCancelRequestedEvent.CancelItemPayload.builder()
+                                .sku(i.getSku())
+                                .productName(i.getProductName())
+                                .quantity(i.getQuantity())
+                                .build())
+                        .toList())
+                .build();
+
+        String payloadJson;
+        try {
+            payloadJson = objectMapper.writeValueAsString(event);
+        } catch (JsonProcessingException e) {
+            throw new IllegalStateException("Không thể serialize OrderCancelRequestedEvent", e);
+        }
+
+        return OutboxEvent.builder()
+                .aggregateType("ORDER_SAGA")
+                .aggregateId(order.getId().toString())
+                .eventType(OrderCancelRequestedEvent.class.getSimpleName())
+                .topic(orderCancellationTopic)
+                .partitionKey(order.getOrderNumber()) // Đảm bảo toàn bộ message cùng đơn vào chung 1 Kafka partition
+                .payload(payloadJson)
+                .status(OutboxStatus.PENDING)
+                .retryCount(0)
+                .build();
+    }
 
     @Override
     public OrderResponse createOrder(CreateOrderRequest request) {

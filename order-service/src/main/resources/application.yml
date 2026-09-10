@@ -56,7 +56,7 @@ spring:
     bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:29092}
     producer:
       key-serializer: org.apache.kafka.common.serialization.StringSerializer
-      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
       acks: all
       retries: 5
       properties:
@@ -65,7 +65,13 @@ spring:
         compression.type: snappy
         linger.ms: 10
         batch.size: 16384
-        spring.json.add.type.headers: false
+    consumer:
+      group-id: xcare-order-service-group
+      auto-offset-reset: earliest
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      properties:
+        spring.json.trusted.packages: "*"
 
   # ----------------------------------------------------------------------------
   # Redis 7.2 Standalone Config (Used by Redisson Spring Boot Starter)
@@ -91,7 +97,9 @@ xcare:
       max-retry: 5
     topics:
       order-created: xcare.orders.created.v1
-      order-cancelled: xcare.orders.cancelled.v1
+      order-cancellation: order-cancellation-events
+      shipping-cancellation: shipping-cancellation-events
+      inventory-events: inventory-events
 
 # ------------------------------------------------------------------------------
 # Observability & Health Actuator

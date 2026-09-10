@@ -26,6 +26,12 @@ public class GlobalExceptionHandler {
                 .body(ApiResponse.failure("Inventory check failed: " + ex.getMessage(), null));
     }
 
+    @ExceptionHandler(IllegalOrderStateException.class)
+    public ResponseEntity<ApiResponse<Void>> handleIllegalOrderState(IllegalOrderStateException ex) {
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                .body(ApiResponse.failure("Yêu cầu hủy đơn không hợp lệ: " + ex.getMessage(), null));
+    }
+
     @ExceptionHandler(OrderNotFoundException.class)
     public ResponseEntity<ApiResponse<Void>> handleNotFound(OrderNotFoundException ex) {
         return ResponseEntity.status(HttpStatus.NOT_FOUND)

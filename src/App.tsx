@@ -1,18 +1,21 @@
 import React, { useState } from 'react';
 import { 
   Server, Database, Network, ShieldCheck, Cpu, 
-  Layers, CheckCircle2, Lock, ArrowRight, Activity, Terminal
+  Layers, CheckCircle2, Lock, ArrowRight, Activity, Terminal,
+  RotateCcw, RefreshCw, Truck, Package, AlertCircle, Play, Check
 } from 'lucide-react';
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'overview' | 'services' | 'outbox' | 'compose'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'saga' | 'services' | 'outbox' | 'compose'>('saga');
+  const [sagaStep, setSagaStep] = useState<number>(0);
+  const [isSimulating, setIsSimulating] = useState<boolean>(false);
 
   const microservices = [
     { name: 'API Gateway', port: 8000, tech: 'Spring Cloud Gateway', db: '-', role: 'Routing, Rate Limiting & SSL Termination' },
     { name: 'Auth Service', port: 8080, tech: 'Keycloak 24.0.2 + Spring Security', db: 'auth_db', role: 'Identity Provider, Dynamic RBAC, Customer & Staff Accounts' },
     { name: 'Order Service', port: 8081, tech: 'Java 21, Spring Boot 3.4.2, Redisson', db: 'orders_db', role: 'Dynamic Pricing, Redisson Distributed Lock, Transactional Outbox' },
-    { name: 'Shipping & 3PL Service', port: 8082, tech: 'Spring Boot 3.4.2 + 3PL Adapters', db: 'shipping_db', role: 'Multi-carrier routing: GHTK, GHN, ViettelPost, Ahamove, Grab' },
-    { name: 'Hub Fulfillment Service', port: 8083, tech: 'Spring Boot 3.4.2 + Kafka Consumer', db: 'fulfillment_db', role: 'Pharmacy Store/Warehouse Batch Picking & Handover barcode' },
+    { name: 'Shipping & 3PL Service', port: 8082, tech: 'Spring Boot 3.4.2 + 3PL Adapters', db: 'shipping_db', role: '3PL Routing (Ahamove, GHTK), Cancellation Adapter & Redis Idempotency' },
+    { name: 'Hub Fulfillment & Inventory', port: 8083, tech: 'Spring Boot 3.4.2 + Redisson MultiLock', db: 'fulfillment_db / inventory_db', role: 'Pharmacy Hub Stock Reservation & Release with Distributed Lock' },
     { name: 'Tracking & Webhook Service', port: 8084, tech: 'Spring Boot 3.4.2 + Redis Idempotency', db: 'tracking_db', role: 'Real-time 3PL Webhook Ingestion & Event Deduplication' },
     { name: 'Notification Service', port: 8085, tech: 'Spring Boot 3.4.2 + Kafka Listener', db: 'Redis cache', role: 'Omnichannel Push, Zalo ZNS, SMS, Email notifications' },
   ];
@@ -27,6 +30,58 @@ export default function App() {
     { label: 'IAM & Security', val: 'Keycloak 24.0.2 (OIDC/OAuth2)' },
   ];
 
+  const sagaSteps = [
+    {
+      step: 1,
+      title: 'Bước 1: Khách hàng ấn Hủy đơn',
+      service: 'Order Service (:8081)',
+      action: 'Nhận POST /api/v1/orders/{id}/cancel -> Kiểm tra điều kiện -> Đổi trạng thái đơn sang CANCEL_REQUESTED -> Lưu sự kiện OrderCancelRequestedEvent vào bảng outbox_events trong CÙNG DB Transaction.',
+      topic: 'order-cancellation-events',
+      tech: 'ACID Transaction + Transactional Outbox + SKIP LOCKED poller',
+      keyData: 'Status: CANCEL_REQUESTED | OutboxStatus: PENDING -> PUBLISHED',
+    },
+    {
+      step: 2,
+      title: 'Bước 2: Hủy chuyến vận chuyển 3PL',
+      service: 'Shipping Service (:8082)',
+      action: 'Lắng nghe Kafka Event -> Kiểm tra Idempotency bằng Redis Key (xcare:idempotency:shipping:cancel:{orderId}) -> Gọi API đối tác 3PL (Ahamove/GHTK) hủy chuyến -> Cập nhật Shipment = CANCELLED -> Bắn SHIPMENT_CANCELLED.',
+      topic: 'shipping-cancellation-events',
+      tech: 'Redis setIfAbsent (TTL 24h) + Ahamove/GHTK REST Adapter',
+      keyData: 'Redis Key: xcare:idempotency:shipping:cancel:UUID (Status: COMPLETED)',
+    },
+    {
+      step: 3,
+      title: 'Bước 3: Hoàn trả tồn kho nhà thuốc (Compensating)',
+      service: 'Inventory Service (:8083)',
+      action: 'Lắng nghe SHIPMENT_CANCELLED -> Kiểm tra Idempotency Redis -> Sắp xếp SKU theo thứ tự từ điển -> Lấy Redisson MultiLock -> Hoàn trả tồn kho (Reserved -> Available) -> Giải phóng Lock -> Bắn INVENTORY_RELEASED.',
+      topic: 'inventory-events',
+      tech: 'Redisson Distributed MultiLock + Redis Idempotent Consumer',
+      keyData: 'Lock Keys: xcare:lock:inventory:HUB-HN-001:SKU-xxx (RLock.unlock() safely)',
+    },
+    {
+      step: 4,
+      title: 'Bước 4: Đóng quy trình Saga & Cập nhật kết quả',
+      service: 'Order Service (:8081)',
+      action: 'Lắng nghe INVENTORY_RELEASED -> Kiểm tra Idempotency đơn hàng -> Cập nhật trạng thái đơn thành CANCELLED_BY_CUSTOMER -> Ghi log kiểm toán & Đóng hoàn tất quy trình Saga Rollback.',
+      topic: 'inventory-events -> Final Order State',
+      tech: 'Kafka Listener + JPA Transaction + Customer Audit Log',
+      keyData: 'Final Status: CANCELLED_BY_CUSTOMER (Saga Process Closed)',
+    },
+  ];
+
+  const handleRunSimulation = () => {
+    setIsSimulating(true);
+    setSagaStep(1);
+    const timers = [
+      setTimeout(() => setSagaStep(2), 1200),
+      setTimeout(() => setSagaStep(3), 2400),
+      setTimeout(() => {
+        setSagaStep(4);
+        setIsSimulating(false);
+      }, 3600),
+    ];
+  };
+
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 font-sans p-6 md:p-10 selection:bg-teal-500 selection:text-slate-950">
       <div className="max-w-7xl mx-auto space-y-8">
@@ -40,13 +95,13 @@ export default function App() {
               </span>
               <div>
                 <h1 className="text-2xl font-bold tracking-tight text-white">XCare Omnichannel Platform</h1>
-                <p className="text-sm text-slate-400">Enterprise Pharmacy Retail &amp; Omnichannel E-commerce Backend Architecture</p>
+                <p className="text-sm text-slate-400">Enterprise Pharmacy Retail &amp; Omnichannel E-commerce Microservices Backend</p>
               </div>
             </div>
           </div>
           <div className="flex items-center gap-2">
             <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-              <CheckCircle2 className="w-3.5 h-3.5" /> Backend Ready
+              <CheckCircle2 className="w-3.5 h-3.5" /> Task 1: Saga Rollback Ready
             </span>
             <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-blue-500/10 text-blue-400 border border-blue-500/20">
               Spring Boot 3.4.2
@@ -55,17 +110,18 @@ export default function App() {
         </header>
 
         {/* Tab Navigation */}
-        <div className="flex gap-2 border-b border-slate-800 pb-2">
+        <div className="flex gap-2 border-b border-slate-800 pb-2 overflow-x-auto">
           {[
+            { id: 'saga', label: 'Task 1: Saga Rollback Flow (Hủy đơn & Hoàn tác)' },
             { id: 'overview', label: 'Architecture Overview' },
             { id: 'services', label: 'Microservices Topology (:8000 - :8085)' },
-            { id: 'outbox', label: 'Outbox & Distributed Lock Flow' },
+            { id: 'outbox', label: 'Outbox & Distributed Lock' },
             { id: 'compose', label: 'Infrastructure Specs' },
           ].map((tab) => (
             <button
               key={tab.id}
               onClick={() => setActiveTab(tab.id as any)}
-              className={`px-4 py-2 text-sm font-medium rounded-lg transition-all ${
+              className={`px-4 py-2 text-sm font-medium rounded-lg transition-all whitespace-nowrap ${
                 activeTab === tab.id
                   ? 'bg-slate-800 text-teal-300 shadow-sm border border-slate-700'
                   : 'text-slate-400 hover:text-slate-200 hover:bg-slate-900'
@@ -75,6 +131,148 @@ export default function App() {
             </button>
           ))}
         </div>
+
+        {/* Tab 0: Task 1: Saga Rollback */}
+        {activeTab === 'saga' && (
+          <div className="space-y-6">
+            <div className="p-6 rounded-xl bg-slate-900 border border-slate-800 space-y-6">
+              <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+                <div>
+                  <span className="text-xs uppercase tracking-wider text-teal-400 font-bold bg-teal-950/60 px-2.5 py-1 rounded border border-teal-800/60">
+                    Compensating Transactions Pattern
+                  </span>
+                  <h2 className="text-xl font-bold text-white mt-2 flex items-center gap-2">
+                    <RotateCcw className="w-5 h-5 text-teal-400" />
+                    Kịch bản Nghiệp vụ: Khách hàng ấn Hủy đơn thuốc &amp; Kích hoạt Saga Rollback
+                  </h2>
+                  <p className="text-sm text-slate-400 mt-1 max-w-4xl">
+                    Khi đơn thuốc đang ở trạng thái <strong className="text-amber-400">Shipper đang di chuyển tới nhà thuốc lấy hàng</strong>, khách hàng yêu cầu hủy đơn. Hệ thống kích hoạt chuỗi giao dịch bù trừ qua Kafka Choreography đảm bảo tính nhất quán dữ liệu phân tán (Eventual Consistency).
+                  </p>
+                </div>
+
+                <button
+                  onClick={handleRunSimulation}
+                  disabled={isSimulating}
+                  className="px-5 py-2.5 rounded-lg bg-teal-600 hover:bg-teal-500 disabled:opacity-50 text-white font-semibold text-sm flex items-center gap-2 shadow-lg shadow-teal-900/30 transition-all shrink-0"
+                >
+                  {isSimulating ? (
+                    <>
+                      <RefreshCw className="w-4 h-4 animate-spin" />
+                      Đang chạy Saga Rollback...
+                    </>
+                  ) : (
+                    <>
+                      <Play className="w-4 h-4" />
+                      Mô phỏng Saga Rollback (4 Bước)
+                    </>
+                  )}
+                </button>
+              </div>
+
+              {/* 4-Step Interactive Flow Visualizer */}
+              <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                {sagaSteps.map((s) => {
+                  const isActive = sagaStep === s.step;
+                  const isDone = sagaStep > s.step;
+                  return (
+                    <div
+                      key={s.step}
+                      onClick={() => setSagaStep(s.step)}
+                      className={`cursor-pointer p-4 rounded-xl border transition-all relative flex flex-col justify-between ${
+                        isActive
+                          ? 'bg-slate-800 border-teal-500 shadow-md shadow-teal-500/10 ring-1 ring-teal-500'
+                          : isDone
+                          ? 'bg-slate-900/90 border-emerald-500/40 text-slate-300'
+                          : 'bg-slate-950 border-slate-800 text-slate-400 hover:border-slate-700'
+                      }`}
+                    >
+                      <div className="space-y-2">
+                        <div className="flex items-center justify-between">
+                          <span className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold ${
+                            isDone ? 'bg-emerald-500 text-slate-950' : isActive ? 'bg-teal-500 text-slate-950' : 'bg-slate-800 text-slate-400'
+                          }`}>
+                            {isDone ? <Check className="w-3.5 h-3.5 stroke-[3]" /> : s.step}
+                          </span>
+                          <span className="text-[11px] font-mono px-2 py-0.5 rounded bg-slate-950 border border-slate-800 text-teal-300">
+                            {s.service.split(' ')[0]}
+                          </span>
+                        </div>
+                        <h4 className="font-semibold text-sm text-white">{s.title}</h4>
+                        <p className="text-xs text-slate-400 leading-relaxed line-clamp-4">{s.action}</p>
+                      </div>
+
+                      <div className="mt-4 pt-3 border-t border-slate-800/80 space-y-1">
+                        <div className="text-[10px] text-slate-400 font-mono">Topic: <span className="text-purple-300">{s.topic}</span></div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+
+              {/* Selected Step Deep Dive */}
+              {sagaStep > 0 && (
+                <div className="p-5 rounded-xl bg-slate-950 border border-teal-500/30 space-y-3">
+                  <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+                    <span className="text-sm font-bold text-teal-300 flex items-center gap-2">
+                      <Layers className="w-4 h-4" />
+                      Chi tiết kỹ thuật {sagaSteps[sagaStep - 1].title}
+                    </span>
+                    <span className="text-xs font-mono text-slate-400">
+                      Module: <strong className="text-white">{sagaSteps[sagaStep - 1].service}</strong>
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-xs">
+                    <div className="space-y-1">
+                      <span className="text-slate-400 font-medium">Hành động kỹ thuật:</span>
+                      <p className="text-slate-200 leading-relaxed">{sagaSteps[sagaStep - 1].action}</p>
+                    </div>
+                    <div className="space-y-1">
+                      <span className="text-slate-400 font-medium">Design Pattern &amp; Cơ chế:</span>
+                      <p className="text-amber-300 font-mono leading-relaxed">{sagaSteps[sagaStep - 1].tech}</p>
+                    </div>
+                    <div className="space-y-1">
+                      <span className="text-slate-400 font-medium">Dữ liệu &amp; Khóa phân tán:</span>
+                      <p className="text-emerald-300 font-mono leading-relaxed">{sagaSteps[sagaStep - 1].keyData}</p>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Architecture Guarantees in Task 1 */}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm">
+              <div className="p-5 rounded-xl bg-slate-900 border border-slate-800 space-y-2">
+                <span className="font-semibold text-teal-300 flex items-center gap-2">
+                  <Lock className="w-4 h-4 text-teal-400" />
+                  Redisson Distributed Multi-Lock
+                </span>
+                <p className="text-xs text-slate-400 leading-relaxed">
+                  Ở Bước 3, trước khi giải phóng kho, Inventory Service sắp xếp danh sách SKU theo thứ tự từ điển (Lexicographical Sort) để lấy Redisson MultiLock. Điều này ngăn chặn 100% rủi ro Circular Distributed Deadlock khi nhiều đơn hoàn trả/đặt cùng lúc.
+                </p>
+              </div>
+
+              <div className="p-5 rounded-xl bg-slate-900 border border-slate-800 space-y-2">
+                <span className="font-semibold text-blue-300 flex items-center gap-2">
+                  <Activity className="w-4 h-4 text-blue-400" />
+                  Redis Idempotent Consumer
+                </span>
+                <p className="text-xs text-slate-400 leading-relaxed">
+                  Kafka đảm bảo At-Least-Once delivery, do đó message có thể bị gửi trùng lặp khi rebalance. Shipping Service &amp; Inventory Service áp dụng Redis Key <code className="text-blue-300 font-mono">xcare:idempotency:*:&#123;orderId&#125;</code> với lệnh <code className="text-blue-300 font-mono">setIfAbsent</code> và TTL 24h để đảm bảo chỉ xử lý đúng 1 lần.
+                </p>
+              </div>
+
+              <div className="p-5 rounded-xl bg-slate-900 border border-slate-800 space-y-2">
+                <span className="font-semibold text-purple-300 flex items-center gap-2">
+                  <Database className="w-4 h-4 text-purple-400" />
+                  Transactional Outbox Pattern
+                </span>
+                <p className="text-xs text-slate-400 leading-relaxed">
+                  Khi khách ấn hủy đơn ở Bước 1, trạng thái <code className="text-purple-300 font-mono">CANCEL_REQUESTED</code> và bản ghi sự kiện Outbox được ghi vào PostgreSQL trong cùng 1 ACID Transaction duy nhất. Worker nền sử dụng <code className="text-purple-300 font-mono">FOR UPDATE SKIP LOCKED</code> đẩy tin sang Kafka an toàn tuyệt đối.
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Tab 1: Overview */}
         {activeTab === 'overview' && (
@@ -194,7 +392,7 @@ export default function App() {
               Run <code className="text-teal-300 font-mono bg-slate-950 px-2 py-0.5 rounded border border-slate-800">docker compose up -d</code> in the root directory to launch all underlying platforms:
             </p>
             <ul className="list-disc list-inside text-sm text-slate-300 space-y-1 font-mono">
-              <li>PostgreSQL 16: Port 5432 (Auto-initializes keycloak_db, auth_db, orders_db, shipping_db, fulfillment_db, tracking_db)</li>
+              <li>PostgreSQL 16: Port 5432 (Auto-initializes keycloak_db, auth_db, orders_db, shipping_db, fulfillment_db, inventory_db, tracking_db)</li>
               <li>Apache Kafka 3.7.0: Ports 9092 (internal), 29092 (host) (KRaft Mode, Cluster ID initialized)</li>
               <li>Kafka UI: Port 8090 (Dashboard at http://localhost:8090)</li>
               <li>Redis 7.2: Port 6379 (Password protected for Redisson Distributed Locks)</li>

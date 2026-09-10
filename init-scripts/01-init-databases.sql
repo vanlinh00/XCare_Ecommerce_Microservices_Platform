@@ -23,7 +23,11 @@ WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'shipping_db')\gexec
 SELECT 'CREATE DATABASE fulfillment_db'
 WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'fulfillment_db')\gexec
 
--- 6. Tracking & Webhook Database (Real-time tracking, 3PL Webhook idempotency)
+-- 6. Inventory Service Database
+SELECT 'CREATE DATABASE inventory_db'
+WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'inventory_db')\gexec
+
+-- 7. Tracking & Webhook Database (Real-time tracking, 3PL Webhook idempotency)
 SELECT 'CREATE DATABASE tracking_db'
 WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'tracking_db')\gexec
 
@@ -33,4 +37,5 @@ GRANT ALL PRIVILEGES ON DATABASE auth_db TO postgres;
 GRANT ALL PRIVILEGES ON DATABASE orders_db TO postgres;
 GRANT ALL PRIVILEGES ON DATABASE shipping_db TO postgres;
 GRANT ALL PRIVILEGES ON DATABASE fulfillment_db TO postgres;
+GRANT ALL PRIVILEGES ON DATABASE inventory_db TO postgres;
 GRANT ALL PRIVILEGES ON DATABASE tracking_db TO postgres;

@@ -1,7 +1,9 @@
 package com.xcare.order.controller;
 
+import com.xcare.order.dto.request.CancelOrderRequest;
 import com.xcare.order.dto.request.CreateOrderRequest;
 import com.xcare.order.dto.response.ApiResponse;
+import com.xcare.order.dto.response.CancelOrderResponse;
 import com.xcare.order.dto.response.OrderResponse;
 import com.xcare.order.service.OrderService;
 import jakarta.validation.Valid;
@@ -36,6 +38,23 @@ public class OrderController {
 
         return ResponseEntity.status(HttpStatus.CREATED)
                 .body(ApiResponse.success(response, "Order created successfully. Outbox event scheduled."));
+    }
+
+    /**
+     * Bước 1: Khách hàng ấn Hủy đơn thuốc & Kích hoạt Saga Rollback.
+     * Kiểm tra điều kiện đơn -> Chuyển trạng thái sang CANCEL_REQUESTED -> Ghi Outbox event -> Kafka.
+     */
+    @PostMapping("/{id}/cancel")
+    public ResponseEntity<ApiResponse<CancelOrderResponse>> cancelOrder(
+            @PathVariable("id") UUID id,
+            @Valid @RequestBody CancelOrderRequest request
+    ) {
+        log.info("Khách hàng gửi yêu cầu hủy đơn thuốc ID [{}]", id);
+
+        CancelOrderResponse response = orderService.cancelOrder(id, request);
+
+        return ResponseEntity.status(HttpStatus.ACCEPTED)
+                .body(ApiResponse.success(response, response.getMessage()));
     }
 
     /**
