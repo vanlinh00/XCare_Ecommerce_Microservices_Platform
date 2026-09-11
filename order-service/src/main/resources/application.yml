@@ -104,6 +104,8 @@ xcare:
       order-saga-responses: order-saga-responses
       inventory-events: inventory-events
       inventory-commands: inventory-commands
+      catalog-commands: catalog-commands
+      inventory-saga-responses: inventory-saga-responses
 
 # ------------------------------------------------------------------------------
 # Observability & Health Actuator

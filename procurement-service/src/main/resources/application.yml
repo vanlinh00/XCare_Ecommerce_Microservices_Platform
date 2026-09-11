@@ -1,19 +1,19 @@
 server:
-  port: 8083
+  port: 8084
   servlet:
     context-path: /
 
 spring:
   application:
-    name: fulfillment-service
+    name: procurement-service
 
   datasource:
-    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/fulfillment_db}
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/procurement_db}
     username: ${SPRING_DATASOURCE_USERNAME:postgres}
     password: ${SPRING_DATASOURCE_PASSWORD:postgres123}
     driver-class-name: org.postgresql.Driver
     hikari:
-      pool-name: XCare-Fulfillment-HikariPool
+      pool-name: XCare-Procurement-HikariPool
       maximum-pool-size: 15
       minimum-idle: 3
 
@@ -37,7 +37,7 @@ spring:
       properties:
         enable.idempotence: true
     consumer:
-      group-id: xcare-inventory-cancellation-group
+      group-id: xcare-procurement-saga-group
       auto-offset-reset: earliest
       key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
       value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
@@ -53,18 +53,9 @@ spring:
 
 xcare:
   topics:
-    fulfillment-events: fulfillment-events
-    shipping-cancellation: shipping-cancellation-events
-    shipping-events: shipping-events
-    inventory-events: inventory-events
     inventory-commands: inventory-commands
     inventory-saga-responses: inventory-saga-responses
-    order-saga-responses: order-saga-responses
-  outbox:
-    publisher:
-      fixed-delay-ms: 2000
-      batch-size: 50
-      max-retry: 5
+    catalog-commands: catalog-commands
 
 management:
   endpoints:

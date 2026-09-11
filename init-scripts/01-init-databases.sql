@@ -31,6 +31,10 @@ WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'inventory_db')\gexec
 SELECT 'CREATE DATABASE tracking_db'
 WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'tracking_db')\gexec
 
+-- 8. Procurement Service Database (Stock Transfer Sagas, Outbox)
+SELECT 'CREATE DATABASE procurement_db'
+WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'procurement_db')\gexec
+
 -- Grant privileges to default application user
 GRANT ALL PRIVILEGES ON DATABASE keycloak_db TO postgres;
 GRANT ALL PRIVILEGES ON DATABASE auth_db TO postgres;
@@ -39,3 +43,4 @@ GRANT ALL PRIVILEGES ON DATABASE shipping_db TO postgres;
 GRANT ALL PRIVILEGES ON DATABASE fulfillment_db TO postgres;
 GRANT ALL PRIVILEGES ON DATABASE inventory_db TO postgres;
 GRANT ALL PRIVILEGES ON DATABASE tracking_db TO postgres;
+GRANT ALL PRIVILEGES ON DATABASE procurement_db TO postgres;

@@ -44,6 +44,7 @@
         <module>order-service</module>
         <module>shipping-service</module>
         <module>fulfillment-service</module>
+        <module>procurement-service</module>
         <module>tracking-service</module>
         <module>notification-service</module>
     </modules>

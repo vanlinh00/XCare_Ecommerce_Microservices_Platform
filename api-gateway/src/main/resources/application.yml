@@ -31,9 +31,15 @@ spring:
           predicates:
             - Path=/api/v1/fulfillment/**
 
-        # Tracking & Webhook Service (:8084)
-        - id: tracking-service-route
+        # Procurement & Stock Transfer Service (:8084)
+        - id: procurement-service-route
           uri: http://localhost:8084
+          predicates:
+            - Path=/api/v1/stock-transfers/**
+
+        # Tracking & Webhook Service (:8086)
+        - id: tracking-service-route
+          uri: http://localhost:8086
           predicates:
             - Path=/api/v1/tracking/**
 
